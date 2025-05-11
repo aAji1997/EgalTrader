@@ -1,0 +1,17 @@
+{
+  "status": "idle",
+  "message": "Forecaster not started",
+  "progress": 0.0,
+  "current_step": 0,
+  "total_steps": 0,
+  "current_epoch": 0,
+  "total_epochs": 0,
+  "current_trial": 0,
+  "total_trials": 0,
+  "best_score": null,
+  "start_time": null,
+  "end_time": null,
+  "elapsed_time": 0,
+  "estimated_time_remaining": null,
+  "error": null
+}
