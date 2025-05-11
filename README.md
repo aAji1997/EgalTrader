@@ -1,4 +1,4 @@
-# NS_Trader(No Slouch Trader) v1: Adaptive Portfolio Management Agent
+# EgalTrader v1: Adaptive Portfolio Management Agent
 
 A sophisticated deep reinforcement learning-based trading agent that combines market regime detection, multi-style trading strategies, and advanced forecasting for optimal portfolio management.
 
