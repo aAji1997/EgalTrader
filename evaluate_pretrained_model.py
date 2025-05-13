@@ -265,6 +265,104 @@ def extract_tickers_from_model(model_path):
         return None
 
 
+def update_metadata_with_tickers(model_path, tickers, ticker_returns=None):
+    """
+    Update the metadata files associated with a model to use the specified tickers.
+
+    Args:
+        model_path: Path to the model file
+        tickers: List of ticker symbols
+        ticker_returns: Dictionary of ticker returns (optional)
+    """
+    try:
+        # Get the model directory and name
+        model_dir = os.path.dirname(model_path)
+        model_name = os.path.basename(model_path).split('.')[0]
+
+        # Find metadata files associated with this model
+        metadata_files = []
+
+        # Check for model-specific metadata file
+        model_metadata_path = os.path.join(model_dir, f"{model_name}_metadata.json")
+        if os.path.exists(model_metadata_path):
+            metadata_files.append(model_metadata_path)
+
+        # Check for best_model_metadata.json if this is the best model
+        if model_name == "best_model":
+            best_model_metadata_path = os.path.join(model_dir, "best_model_metadata.json")
+            if os.path.exists(best_model_metadata_path):
+                metadata_files.append(best_model_metadata_path)
+
+        # If no metadata files found, create default ones
+        if not metadata_files:
+            # Create a default metadata file for this model
+            if model_name == "best_model":
+                metadata_files.append(os.path.join(model_dir, "best_model_metadata.json"))
+            else:
+                metadata_files.append(os.path.join(model_dir, f"{model_name}_metadata.json"))
+
+        # If no ticker_returns provided, calculate them
+        if ticker_returns is None:
+            ticker_returns = {}
+            try:
+                # Initialize StockAnalyzer to get historical data
+                analyzer = StockAnalyzer(tickers=tickers)
+
+                # Calculate returns for each ticker
+                for ticker in tickers:
+                    try:
+                        # Get historical data for the ticker
+                        ticker_data = analyzer.data[analyzer.data['ticker'] == ticker]
+
+                        if not ticker_data.empty:
+                            # Calculate return based on first and last available prices
+                            first_price = ticker_data.iloc[0]['Close']
+                            last_price = ticker_data.iloc[-1]['Close']
+                            pct_return = ((last_price - first_price) / first_price) * 100
+                            ticker_returns[ticker] = round(pct_return, 2)
+                        else:
+                            ticker_returns[ticker] = 0.0
+                    except Exception as e:
+                        print(f"Error calculating return for {ticker}: {str(e)}")
+                        ticker_returns[ticker] = 0.0
+            except Exception as e:
+                print(f"Error initializing StockAnalyzer: {str(e)}")
+                # Set default returns if calculation fails
+                for ticker in tickers:
+                    ticker_returns[ticker] = 0.0
+
+        # Update each metadata file
+        for metadata_path in metadata_files:
+            try:
+                # Check if file exists
+                if os.path.exists(metadata_path):
+                    # Read existing metadata
+                    with open(metadata_path, 'r') as f:
+                        metadata = json.load(f)
+                else:
+                    # Create new metadata with default values
+                    metadata = {
+                        "tickers": [],
+                        "training_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "initial_capital": 10000,
+                        "model_version": "1.0"
+                    }
+
+                # Update tickers and ticker_returns
+                metadata['tickers'] = tickers
+                metadata['ticker_returns'] = ticker_returns
+
+                # Write updated metadata
+                with open(metadata_path, 'w') as f:
+                    json.dump(metadata, f, indent=4)
+
+                print(f"Updated metadata file: {metadata_path}")
+            except Exception as e:
+                print(f"Error updating metadata file {metadata_path}: {str(e)}")
+
+    except Exception as e:
+        print(f"Error updating metadata with tickers: {str(e)}")
+
 def evaluate_pretrained_model(
     model_path,
     tickers=None,
@@ -297,6 +395,13 @@ def evaluate_pretrained_model(
         else:
             print("Could not extract tickers from model, using default tickers")
             tickers = ['INTC', 'HPE']  # Default tickers
+    else:
+        # If tickers are provided and different from the model's tickers,
+        # update the metadata files
+        model_tickers = extract_tickers_from_model(model_path)
+        if model_tickers and set(tickers) != set(model_tickers):
+            print(f"Updating metadata files with new tickers: {tickers}")
+            update_metadata_with_tickers(model_path, tickers)
 
     evaluator = ModelEvaluator(
         model_path=model_path,

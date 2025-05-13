@@ -29,9 +29,10 @@ class RLTrainer:
                  training_batch_size: int = 32,
                  eval_batch_size: int = 16,
                  rollout_episodes: int = 10,
-                 n_episodes: int = 1000,
+                 n_episodes: int = 300,
                  num_workers: int = 4,
-                 initial_capital: int = 10000):  # Add initial_capital parameter
+                 initial_capital: int = 10000,
+                 tickers=None):  # Add tickers parameter
         """
         Initialize the RL trainer with dynamic episode and step settings based on data.
 
@@ -43,6 +44,7 @@ class RLTrainer:
             rollout_episodes: Number of rollout episodes
             num_workers: Number of workers for data loading (default: 4)
             initial_capital: Initial investment capital (default: 10000)
+            tickers: List of ticker symbols to use (default: None, which will use ['INTC', 'HPE'])
         """
         # Enable automatic mixed precision with memory optimization
         self.scaler = GradScaler()
@@ -92,12 +94,13 @@ class RLTrainer:
         self.training_batch_size = training_batch_size
         self.eval_batch_size = eval_batch_size
 
-        # Save initial capital
+        # Save initial capital and tickers
         self.initial_capital = initial_capital
+        self.tickers = tickers if tickers is not None else ['INTC', 'HPE']
 
         # Initialize environment and agent with memory optimization
         try:
-            self.env = PortfolioEnv(initial_capital=self.initial_capital)
+            self.env = PortfolioEnv(tickers=self.tickers, initial_capital=self.initial_capital)
             self.agent = PortfolioAgent(
                 self.env,
                 buffer_size=5_000,  # Reduced buffer size
@@ -121,7 +124,7 @@ class RLTrainer:
                 torch.cuda.empty_cache()
                 self.current_memory_fraction = 0.3
                 torch.cuda.set_per_process_memory_fraction(self.current_memory_fraction)
-                self.env = PortfolioEnv(initial_capital=self.initial_capital)
+                self.env = PortfolioEnv(tickers=self.tickers, initial_capital=self.initial_capital)
                 self.agent = PortfolioAgent(
                     self.env,
                     buffer_size=2_500,
@@ -175,6 +178,8 @@ class RLTrainer:
         self.rollout_episodes = rollout_episodes
         self.rollout_scores = []
         self.best_rollout_score = -np.inf
+        self.best_portfolio_return = 0.0
+        self.best_ticker_returns = {}
 
         # Modify evaluation metrics to separate rollout and final evaluation
         self.final_eval_scores = []
@@ -891,13 +896,45 @@ class RLTrainer:
             print(f"Sharpe: {sharpe_ratio:.2f}")
             print(f"Max Drawdown: {max_drawdown:.2%}")
 
+        # Calculate ticker-specific returns
+        ticker_returns = {}
+        try:
+            # Get initial prices
+            initial_date = self.env.dates[0]
+            initial_prices = torch.tensor(
+                self.env.unscaled_close_df.loc[initial_date]['Close'].values,
+                device=self.env.gpu_device,
+                dtype=torch.float32
+            )
+
+            # Get final prices
+            final_date = self.env.dates[-1]
+            final_prices = torch.tensor(
+                self.env.unscaled_close_df.loc[final_date]['Close'].values,
+                device=self.env.gpu_device,
+                dtype=torch.float32
+            )
+
+            # Calculate percentage returns for each ticker
+            for i, ticker in enumerate(self.env.tickers):
+                initial_price = initial_prices[i].item()
+                final_price = final_prices[i].item()
+                pct_return = ((final_price - initial_price) / initial_price) * 100
+                ticker_returns[ticker] = round(pct_return, 2)
+        except Exception as e:
+            print(f"Warning: Could not calculate ticker-specific returns: {str(e)}")
+            # Set default values if calculation fails
+            for ticker in self.env.tickers:
+                ticker_returns[ticker] = 0.0
+
         checkpoint = {
             'episode': episode,
             'metadata': {
                 'tickers': list(self.env.tickers),  # Store the tickers the model was trained on
                 'training_date': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 'initial_capital': self.initial_capital,
-                'model_version': '1.0'
+                'model_version': '1.0',
+                'ticker_returns': ticker_returns  # Add ticker-specific returns
             },
             'agent_state': {
                 'actor_state_dict': self.agent.actor.state_dict(),
@@ -957,6 +994,8 @@ class RLTrainer:
                     'best_rollout_score': getattr(self, 'best_rollout_score', -np.inf),
                     'best_sharpe': getattr(self, 'best_sharpe', 0.0),
                     'best_drawdown': getattr(self, 'best_drawdown', 1.0),
+                    'best_portfolio_return': getattr(self, 'best_portfolio_return', 0.0),
+                    'best_ticker_returns': getattr(self, 'best_ticker_returns', {}),
                     'best_score_episode': episode if is_best_score else getattr(self, 'best_score_episode', 0)
                 }
             },
@@ -1098,6 +1137,8 @@ class RLTrainer:
                 self.best_rollout_score = best_metrics['best_rollout_score']
                 self.best_sharpe = best_metrics['best_sharpe']
                 self.best_drawdown = best_metrics['best_drawdown']
+                self.best_portfolio_return = best_metrics.get('best_portfolio_return', 0.0)
+                self.best_ticker_returns = best_metrics.get('best_ticker_returns', {})
                 self.best_score_episode = best_metrics['best_score_episode']
 
             # Load meta-learning metrics
@@ -1174,6 +1215,11 @@ class RLTrainer:
             print(f"  Best Rollout Score: {self.best_rollout_score:.4f}")
             print(f"  Best Sharpe: {self.best_sharpe:.2f}")
             print(f"  Best Drawdown: {self.best_drawdown:.2%}")
+            print(f"  Best Portfolio Return: {self.best_portfolio_return:.2f}%")
+            if self.best_ticker_returns:
+                print(f"  Best Ticker-wise Returns:")
+                for ticker, ret in self.best_ticker_returns.items():
+                    print(f"    {ticker}: {ret:.2f}%")
             print(f"  Best Score Episode: {self.best_score_episode}")
             print(f"  Adaptation Factors:")
             print(f"    Vol: {self.agent.adaptive_params['vol_scaling_factor']:.2f}")
@@ -1828,12 +1874,27 @@ class RLTrainer:
         episode_returns = []
         episode_values = []
 
+        # Track ticker-wise returns
+        ticker_returns_by_episode = {ticker: [] for ticker in self.env.tickers}
+        portfolio_returns_by_episode = []
+
         try:
             for episode in tqdm(range(self.rollout_episodes), desc="Rollout Episodes", total=self.rollout_episodes):
                 state = self.env.reset()
                 episode_score = 0
                 episode_value_history = [self.env.initial_capital]
                 episode_return_history = []
+
+                # Get initial prices for ticker return calculation
+                initial_date = self.env.dates[0]
+                initial_prices = torch.tensor(
+                    self.env.unscaled_close_df.loc[initial_date]['Close'].values,
+                    device=self.env.gpu_device,
+                    dtype=torch.float32
+                )
+
+                # Note: We're tracking price returns, not position returns
+                # so we don't need to track initial positions
 
                 market_features = self.agent._create_market_features()
 
@@ -1878,9 +1939,61 @@ class RLTrainer:
 
                     state = next_state
 
+                # Calculate ticker-wise returns at the end of the episode
+                final_date = self.env.dates[min(self.env.current_step, len(self.env.dates)-1)]
+                final_prices = torch.tensor(
+                    self.env.unscaled_close_df.loc[final_date]['Close'].values,
+                    device=self.env.gpu_device,
+                    dtype=torch.float32
+                )
+
+                # Note: We're tracking price returns, not position returns
+                # so we don't need to track final positions
+
+                # Calculate ticker-wise percentage returns
+                ticker_returns = {}
+                for i, ticker in enumerate(self.env.tickers):
+                    initial_price = initial_prices[i].item()
+                    final_price = final_prices[i].item()
+
+                    # Calculate price return (market return)
+                    price_return = ((final_price - initial_price) / initial_price) * 100
+
+                    # Calculate price return (market return)
+                    # Note: We're only tracking price returns for now, not position returns
+                    # Position returns would require tracking actual trades throughout the episode
+
+                    # Store the price return (what matters for comparison)
+                    ticker_returns[ticker] = round(price_return, 2)
+                    ticker_returns_by_episode[ticker].append(price_return)
+
+                # Calculate overall portfolio return
+                initial_portfolio_value = episode_value_history[0]
+                final_portfolio_value = episode_value_history[-1]
+                portfolio_return = ((final_portfolio_value - initial_portfolio_value) / initial_portfolio_value) * 100
+                portfolio_returns_by_episode.append(portfolio_return)
+
+                # Print ticker-wise and portfolio returns for this episode
+                print(f"\nEpisode {episode+1} Returns:")
+                print(f"  Portfolio: {portfolio_return:.2f}%")
+                print("  Ticker-wise returns:")
+                for ticker, ret in ticker_returns.items():
+                    print(f"    {ticker}: {ret:.2f}%")
+
                 episode_scores.append(episode_score)
                 episode_returns.extend(episode_return_history)
                 episode_values.extend(episode_value_history)
+
+            # Calculate average returns across all episodes
+            avg_portfolio_return = np.mean(portfolio_returns_by_episode)
+            avg_ticker_returns = {ticker: np.mean(returns) for ticker, returns in ticker_returns_by_episode.items()}
+
+            # Print average returns across all episodes
+            print("\nAverage Returns Across All Rollout Episodes:")
+            print(f"  Portfolio: {avg_portfolio_return:.2f}%")
+            print("  Ticker-wise returns:")
+            for ticker, ret in avg_ticker_returns.items():
+                print(f"    {ticker}: {ret:.2f}%")
 
             mean_score = float(np.mean(episode_scores))
             returns_np = np.array([ret.cpu().numpy() if torch.is_tensor(ret) else ret for ret in episode_returns])
@@ -1893,7 +2006,9 @@ class RLTrainer:
 
             metrics = {
                 'sharpe_ratio': sharpe_ratio,
-                'max_drawdown': max_drawdown
+                'max_drawdown': max_drawdown,
+                'avg_portfolio_return': avg_portfolio_return,
+                'avg_ticker_returns': avg_ticker_returns
             }
 
             return mean_score, metrics
@@ -2020,6 +2135,9 @@ class RLTrainer:
         # Calculate composite score considering multiple metrics
         sharpe_ratio = rollout_metrics.get('sharpe_ratio', 0.0)
         max_drawdown = rollout_metrics.get('max_drawdown', 1.0)
+        avg_portfolio_return = rollout_metrics.get('avg_portfolio_return', 0.0)
+        avg_ticker_returns = rollout_metrics.get('avg_ticker_returns', {})
+
         composite_score = rollout_score * (1 + sharpe_ratio) * (1 - max_drawdown)
 
         # Update progress with evaluation results
@@ -2027,6 +2145,7 @@ class RLTrainer:
             current_score=rollout_score,
             sharpe_ratio=sharpe_ratio,
             max_drawdown=max_drawdown,
+            portfolio_return=avg_portfolio_return,
             best_score=getattr(self, 'best_composite_score', float('-inf'))
         )
 
@@ -2037,12 +2156,19 @@ class RLTrainer:
             self.best_rollout_score = rollout_score
             self.best_sharpe = sharpe_ratio
             self.best_drawdown = max_drawdown
+            self.best_portfolio_return = avg_portfolio_return
+            self.best_ticker_returns = avg_ticker_returns
             is_best = True
+
             print(f"\nNew best model!")
             print(f"Composite Score: {composite_score:.4f}")
             print(f"Rollout Score: {rollout_score:.4f}")
             print(f"Sharpe: {sharpe_ratio:.2f}")
             print(f"Max Drawdown: {max_drawdown:.2%}")
+            print(f"Portfolio Return: {avg_portfolio_return:.2f}%")
+            print("Ticker-wise Returns:")
+            for ticker, ret in avg_ticker_returns.items():
+                print(f"  {ticker}: {ret:.2f}%")
 
         # Save regular checkpoint
         checkpoint_path = os.path.join(self.save_dir, f'checkpoint_episode_{episode}.pth')

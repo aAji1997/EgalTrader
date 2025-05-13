@@ -42,6 +42,82 @@ def get_recommendations(sector):
     recommendations_json = recommender.get_recommendations(sector, return_json=True)
     return recommendations_json
 
+# Function to update metadata files with selected tickers
+def update_metadata_files(tickers):
+    """
+    Update metadata files with the selected tickers and calculate their returns.
+
+    Args:
+        tickers: List of ticker symbols
+    """
+    try:
+        # Get paths to metadata files
+        memory_dir = "memory"
+        if not os.path.exists(memory_dir):
+            os.makedirs(memory_dir)
+
+        # Find all metadata files
+        metadata_files = [f for f in os.listdir(memory_dir) if f.endswith("_metadata.json")]
+
+        # If no metadata files exist, create a default one
+        if not metadata_files:
+            metadata_files = ["best_model_metadata.json"]
+
+        # Calculate ticker-specific returns
+        analyzer = StockAnalyzer(tickers=tickers, period='max')
+        ticker_returns = {}
+
+        # Get the most recent data for each ticker
+        for ticker in tickers:
+            try:
+                # Get historical data for the ticker
+                ticker_data = analyzer.data[analyzer.data['ticker'] == ticker]
+
+                if not ticker_data.empty:
+                    # Calculate return based on first and last available prices
+                    first_price = ticker_data.iloc[0]['Close']
+                    last_price = ticker_data.iloc[-1]['Close']
+                    pct_return = ((last_price - first_price) / first_price) * 100
+                    ticker_returns[ticker] = round(pct_return, 2)
+                else:
+                    ticker_returns[ticker] = 0.0
+            except Exception as e:
+                print(f"Error calculating return for {ticker}: {str(e)}")
+                ticker_returns[ticker] = 0.0
+
+        # Update each metadata file
+        for metadata_file in metadata_files:
+            file_path = os.path.join(memory_dir, metadata_file)
+            try:
+                # Check if file exists
+                if os.path.exists(file_path):
+                    # Read existing metadata
+                    with open(file_path, 'r') as f:
+                        metadata = json.load(f)
+                else:
+                    # Create new metadata with default values
+                    metadata = {
+                        "tickers": [],
+                        "training_date": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "initial_capital": 10000,
+                        "model_version": "1.0"
+                    }
+
+                # Update tickers and ticker_returns
+                metadata['tickers'] = tickers
+                metadata['ticker_returns'] = ticker_returns
+
+                # Write updated metadata
+                with open(file_path, 'w') as f:
+                    json.dump(metadata, f, indent=4)
+
+                print(f"Updated metadata file: {metadata_file}")
+            except Exception as e:
+                print(f"Error updating metadata file {metadata_file}: {str(e)}")
+
+    except Exception as e:
+        print(f"Error updating metadata files: {str(e)}")
+
 # Function to train the StockAnalyzer
 def train_stock_analyzer(tickers):
     st.session_state.training_status = "Training forecasting model..."
@@ -56,6 +132,9 @@ def train_stock_analyzer(tickers):
         start_time=time.time()
     )
 
+    # Update metadata files with selected tickers
+    update_metadata_files(tickers)
+
     analyzer = StockAnalyzer(tickers=tickers, period='max')
     analyzer.train_stock_model_darts()
 
@@ -63,7 +142,7 @@ def train_stock_analyzer(tickers):
     return analyzer
 
 # Function to train the RL agent
-def train_rl_agent(initial_capital=10000):
+def train_rl_agent(tickers, initial_capital=10000):
     st.session_state.training_status = "Training RL agent..."
 
     # Update overall progress
@@ -81,7 +160,8 @@ def train_rl_agent(initial_capital=10000):
         training_batch_size=64,
         eval_batch_size=32,
         rollout_episodes=10,
-        initial_capital=initial_capital
+        initial_capital=initial_capital,
+        tickers=tickers  # Pass the selected tickers to the RLTrainer
     )
     scores, final_metrics = trainer.training_loop()
 
@@ -337,8 +417,8 @@ def run_training_thread(tickers, initial_capital=10000):
         # Train the StockAnalyzer
         analyzer = train_stock_analyzer(tickers)
 
-        # Train the RL agent with the specified initial capital
-        trainer, final_metrics = train_rl_agent(initial_capital)
+        # Train the RL agent with the specified initial capital and tickers
+        trainer, final_metrics = train_rl_agent(tickers, initial_capital)
 
         # Update overall progress to completed
         import time
@@ -399,6 +479,17 @@ def evaluate_pretrained_model_ui(model_path, tickers, start_date, end_date, init
         use_model_tickers = False
         if not tickers or len(tickers) == 0 or (len(tickers) == 1 and tickers[0].strip() == ""):
             use_model_tickers = True
+            # Extract tickers from the model
+            from evaluate_pretrained_model import extract_tickers_from_model
+            model_tickers = extract_tickers_from_model(model_path)
+            if model_tickers:
+                tickers = model_tickers
+            else:
+                tickers = ['INTC', 'HPE']  # Default tickers
+
+        # Update metadata files with the evaluation tickers
+        if not use_model_tickers:
+            update_metadata_files(tickers)
 
         # Call the evaluation function
         results = evaluate_pretrained_model(
