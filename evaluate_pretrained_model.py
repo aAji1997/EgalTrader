@@ -174,7 +174,7 @@ class ModelEvaluator:
         )
 
         # Run evaluation using the trainer's evaluate method
-        mean_score, sharpe_ratio, max_drawdown = self.trainer.evaluate(n_episodes=self.eval_episodes)
+        mean_score, sharpe_ratio, max_drawdown = self.trainer.evaluate(n_episodes=self.eval_episodes, final=True)
 
         # Get detailed evaluation results
         evaluation_results = {
