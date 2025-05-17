@@ -235,7 +235,7 @@ class StockLoader:
             print(f"{ticker} starts at: {self.data[ticker].first_valid_index()}")
         """
 if __name__ == "__main__":
-    loader = StockLoader(tickers=['CSCO', "HPE"], period='max')
+    loader = StockLoader(tickers=['NVDA', "FTNT"], period='max')
     #loader.load_data(sktime_used=True)
     loader.plot_feature('Close')
 

@@ -332,7 +332,7 @@ class RLFramework:
     
     
 if __name__ == "__main__":
-    agent = RLFramework(tickers=['INTC', 'HPE'])
+    agent = RLFramework(tickers=['NVDA', 'FTNT'])
     train_X, val_X, hist_unscaled_close_train_df, hist_unscaled_close_val_df = agent.final_preprocessing()
     display(train_X.head())
     display(train_X.tail())

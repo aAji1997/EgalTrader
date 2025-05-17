@@ -323,7 +323,7 @@ class StockAnalyzer:
 
         return train_ts_list, val_ts_list, train_covariates_list, val_covariates_list, train_unscaled_close_list, val_unscaled_close_list, time_series_scaler, encoder
 
-    def train_stock_model_darts(self, test_size=0.3, save_dir='trained_models', n_trials=50):
+    def train_stock_model_darts(self, test_size=0.3, save_dir='trained_models', n_trials=20):
         # Initialize progress tracking
         import time
         progress_tracker.update_forecaster_progress(
@@ -599,12 +599,13 @@ class StockAnalyzer:
             min_forecast_date = preds_df.index.min()
             actuals_df = actuals_df[actuals_df.index >= min_forecast_date]
 
+
             actuals_df.to_csv('./data/actuals.csv', index=True)
 
         return preds_df
 
 if __name__ == "__main__":
-    tickers = ['HPE', 'CSCO']
+    tickers = ['FTNT', 'NVDA']
     analyzer = StockAnalyzer(tickers, start_date="2015-01-01")
     analyzer.train_stock_model_darts()
-    analyzer.get_darts_forecast(save_hist_forecasts=True)
+    

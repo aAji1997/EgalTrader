@@ -107,7 +107,7 @@ from portfolio_agent import PortfolioAgent
 from RL_environment import PortfolioEnv
 
 # Initialize for live trading
-env = PortfolioEnv(tickers=['INTC', 'HPE'], mode='eval')
+env = PortfolioEnv(tickers=['NVDA', 'FTNT'], mode='eval')
 env.start_live_trading(initial_capital=10000)
 agent = PortfolioAgent(env)
 agent.load_models()  # Load trained models

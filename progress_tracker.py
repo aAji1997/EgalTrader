@@ -1,7 +1,6 @@
 import os
-import json
 import time
-from typing import Dict, Any, Optional, List, Union
+from typing import Dict, Any
 import threading
 
 class ProgressTracker:
@@ -21,16 +20,21 @@ class ProgressTracker:
         self.progress_dir = progress_dir
         self.lock = threading.Lock()
 
+        # In-memory progress data
+        self.forecaster_progress = {}
+        self.rl_agent_progress = {}
+        self.overall_progress = {}
+
         # Create progress directory if it doesn't exist
         os.makedirs(progress_dir, exist_ok=True)
 
-        # Initialize progress files
-        self._init_progress_files()
+        # Initialize progress data
+        self._init_progress_data()
 
-    def _init_progress_files(self):
-        """Initialize the progress files with default values."""
+    def _init_progress_data(self):
+        """Initialize the progress data with default values."""
         # Forecaster progress
-        forecaster_progress = {
+        self.forecaster_progress = {
             "status": "idle",
             "message": "Forecaster not started",
             "progress": 0.0,
@@ -49,7 +53,7 @@ class ProgressTracker:
         }
 
         # RL agent progress
-        rl_agent_progress = {
+        self.rl_agent_progress = {
             "status": "idle",
             "message": "RL agent not started",
             "progress": 0.0,
@@ -71,7 +75,7 @@ class ProgressTracker:
         }
 
         # Overall progress
-        overall_progress = {
+        self.overall_progress = {
             "status": "idle",
             "message": "Training not started",
             "progress": 0.0,
@@ -84,27 +88,71 @@ class ProgressTracker:
             "error": None
         }
 
-        # Save initial progress files
-        self._save_progress("forecaster", forecaster_progress)
-        self._save_progress("rl_agent", rl_agent_progress)
-        self._save_progress("overall", overall_progress)
+    def _get_default_progress(self, progress_type: str) -> Dict[str, Any]:
+        """
+        Get default progress data for a given type.
+
+        Args:
+            progress_type: Type of progress (forecaster, rl_agent, overall)
+
+        Returns:
+            Default progress data
+        """
+        if progress_type == "forecaster":
+            return {
+                "status": "idle",
+                "message": "Forecaster not started",
+                "progress": 0.0,
+                "current_step": 0,
+                "total_steps": 0,
+                "current_epoch": 0,
+                "total_epochs": 0,
+                "current_trial": 0,
+                "total_trials": 0,
+                "best_score": None,
+                "elapsed_time": 0,
+            }
+        elif progress_type == "rl_agent":
+            return {
+                "status": "idle",
+                "message": "RL agent not started",
+                "progress": 0.0,
+                "current_episode": 0,
+                "total_episodes": 0,
+                "current_score": None,
+                "sharpe_ratio": None,
+                "max_drawdown": None,
+                "elapsed_time": 0,
+            }
+        else:  # overall
+            return {
+                "status": "idle",
+                "message": "Training not started",
+                "progress": 0.0,
+                "current_phase": None,
+                "total_phases": 2,
+                "elapsed_time": 0,
+            }
 
     def _save_progress(self, progress_type: str, progress_data: Dict[str, Any]):
         """
-        Save progress data to a file.
+        Save progress data to memory.
 
         Args:
             progress_type: Type of progress (forecaster, rl_agent, overall)
             progress_data: Progress data to save
         """
         with self.lock:
-            file_path = os.path.join(self.progress_dir, f"{progress_type}_progress.json")
-            with open(file_path, 'w') as f:
-                json.dump(progress_data, f, indent=2)
+            if progress_type == "forecaster":
+                self.forecaster_progress = progress_data
+            elif progress_type == "rl_agent":
+                self.rl_agent_progress = progress_data
+            else:  # overall
+                self.overall_progress = progress_data
 
     def _load_progress(self, progress_type: str) -> Dict[str, Any]:
         """
-        Load progress data from a file.
+        Load progress data from memory.
 
         Args:
             progress_type: Type of progress (forecaster, rl_agent, overall)
@@ -113,13 +161,16 @@ class ProgressTracker:
             Progress data
         """
         with self.lock:
-            file_path = os.path.join(self.progress_dir, f"{progress_type}_progress.json")
             try:
-                with open(file_path, 'r') as f:
-                    return json.load(f)
-            except (FileNotFoundError, json.JSONDecodeError):
-                # Return empty dict if file doesn't exist or is invalid
-                return {}
+                if progress_type == "forecaster":
+                    return self.forecaster_progress
+                elif progress_type == "rl_agent":
+                    return self.rl_agent_progress
+                else:  # overall
+                    return self.overall_progress
+            except Exception:
+                # Return default values if there's any issue
+                return self._get_default_progress(progress_type)
 
     def update_forecaster_progress(self, **kwargs):
         """
@@ -247,7 +298,7 @@ class ProgressTracker:
 
     def reset(self):
         """Reset all progress."""
-        self._init_progress_files()
+        self._init_progress_data()
 
 # Create a global instance of the progress tracker
 progress_tracker = ProgressTracker()

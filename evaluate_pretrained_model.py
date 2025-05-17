@@ -44,7 +44,7 @@ class ModelEvaluator:
         self.model_path = model_path
 
         # If no tickers provided, use default ones
-        self.tickers = tickers if tickers is not None else ['INTC', 'HPE']
+        self.tickers = tickers if tickers is not None else ['NVDA', 'FTNT']
 
         # Set evaluation period
         if start_date is None:
@@ -182,6 +182,7 @@ class ModelEvaluator:
             'sharpe_ratio': sharpe_ratio,
             'max_drawdown': max_drawdown,
             'portfolio_values': self.trainer.episode_values if hasattr(self.trainer, 'episode_values') else [],
+            'buy_and_hold_values': self.trainer.buy_and_hold_values if hasattr(self.trainer, 'buy_and_hold_values') else [],
             'final_eval_scores': self.trainer.final_eval_scores if hasattr(self.trainer, 'final_eval_scores') else []
         }
 
@@ -394,7 +395,7 @@ def evaluate_pretrained_model(
             tickers = model_tickers
         else:
             print("Could not extract tickers from model, using default tickers")
-            tickers = ['INTC', 'HPE']  # Default tickers
+            tickers = ['NVDA', 'FTNT']  # Default tickers
     else:
         # If tickers are provided and different from the model's tickers,
         # update the metadata files
@@ -431,18 +432,4 @@ def evaluate_pretrained_model(
     return results
 
 
-if __name__ == "__main__":
-    # Example usage
-    results = evaluate_pretrained_model(
-        model_path="memory/best_model.pth",
-        tickers=['INTC', 'HPE'],
-        start_date="2023-06-01",
-        end_date="2023-08-01",
-        initial_capital=10000,
-        eval_episodes=10
-    )
 
-    print("\nEvaluation Results:")
-    print(f"Mean Score: {results['mean_score']:.2f}")
-    print(f"Sharpe Ratio: {results['sharpe_ratio']:.2f}")
-    print(f"Max Drawdown: {results['max_drawdown']:.2%}")

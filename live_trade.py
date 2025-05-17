@@ -260,7 +260,7 @@ class LiveTrader:
 if __name__ == "__main__":
     # Initialize
     trader = LiveTrader(
-        tickers=['INTC', 'HPE'],
+        tickers=['NVDA', 'FTNT'],
         initial_capital=10_000
     )
 

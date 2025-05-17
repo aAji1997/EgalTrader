@@ -157,8 +157,8 @@ def train_rl_agent(tickers, initial_capital=10000):
     trainer = RLTrainer(
         eval_frequency=10,
         save_dir="memory",
-        training_batch_size=64,
-        eval_batch_size=32,
+        training_batch_size=32,  # Reduced from 64 to compensate for longer sequence length
+        eval_batch_size=16,      # Reduced from 32 to compensate for longer sequence length
         rollout_episodes=10,
         initial_capital=initial_capital,
         tickers=tickers  # Pass the selected tickers to the RLTrainer
@@ -229,21 +229,32 @@ def create_portfolio_visualizations():
                 # Create a dataframe for the portfolio values
                 portfolio_values = np.array(trainer.episode_values)
 
-                # Calculate buy and hold values (assuming linear growth based on final return)
-                initial_value = portfolio_values[0]
-                final_value = portfolio_values[-1]
-                steps = len(portfolio_values)
+                # Get buy and hold values directly from the trainer if available
+                if hasattr(trainer, 'buy_and_hold_values') and trainer.buy_and_hold_values:
+                    buy_hold_values = trainer.buy_and_hold_values
 
-                # Generate buy and hold values
-                buy_hold_values = []
-                buy_hold_return = buy_and_hold_return / 100  # Convert from percentage to decimal
+                    # Make sure the lengths match
+                    if len(buy_hold_values) > len(portfolio_values):
+                        buy_hold_values = buy_hold_values[:len(portfolio_values)]
+                    elif len(buy_hold_values) < len(portfolio_values):
+                        # Extend buy_hold_values if needed
+                        last_value = buy_hold_values[-1]
+                        extension = [last_value] * (len(portfolio_values) - len(buy_hold_values))
+                        buy_hold_values.extend(extension)
+                else:
+                    # Calculate buy and hold values as a fallback
+                    initial_value = portfolio_values[0]
+                    steps = len(portfolio_values)
 
-                # Linear approximation of buy and hold strategy
-                for i in range(steps):
-                    # Linear interpolation between initial value and calculated final value
-                    t = i / (steps - 1) if steps > 1 else 0
-                    buy_hold_value = initial_value * (1 + buy_hold_return * t)
-                    buy_hold_values.append(buy_hold_value)
+                    buy_hold_values = []
+                    buy_hold_return = buy_and_hold_return / 100  # Convert from percentage to decimal
+
+                    # Linear approximation of buy and hold strategy
+                    for i in range(steps):
+                        # Linear interpolation between initial value and calculated final value
+                        t = i / (steps - 1) if steps > 1 else 0
+                        buy_hold_value = initial_value * (1 + buy_hold_return * t)
+                        buy_hold_values.append(buy_hold_value)
 
                 # Create a dataframe for both strategies
                 portfolio_df = pd.DataFrame({
@@ -360,17 +371,8 @@ def create_portfolio_visualizations():
                 portfolio_values = np.array(trainer.episode_values)
                 initial_value = portfolio_values[0]
 
-                # Generate buy and hold values (reusing from earlier)
-                buy_hold_values = []
-                buy_hold_return = (portfolio_return - relative_return) / 100  # Convert from percentage to decimal
-
-                # Linear approximation of buy and hold strategy
-                steps = len(portfolio_values)
-                for i in range(steps):
-                    # Linear interpolation between initial value and calculated final value
-                    t = i / (steps - 1) if steps > 1 else 0
-                    buy_hold_value = initial_value * (1 + buy_hold_return * t)
-                    buy_hold_values.append(buy_hold_value)
+                # Use buy and hold values from earlier
+                # We already have buy_hold_values from the previous section, so we can reuse them
 
                 rl_drawdown = calculate_drawdown(portfolio_values)
                 bh_drawdown = calculate_drawdown(np.array(buy_hold_values))
@@ -485,7 +487,7 @@ def evaluate_pretrained_model_ui(model_path, tickers, start_date, end_date, init
             if model_tickers:
                 tickers = model_tickers
             else:
-                tickers = ['INTC', 'HPE']  # Default tickers
+                tickers = ['NVDA', 'FTNT']  # Default tickers
 
         # Update metadata files with the evaluation tickers
         if not use_model_tickers:
@@ -510,7 +512,8 @@ def evaluate_pretrained_model_ui(model_path, tickers, start_date, end_date, init
         st.session_state.evaluation_results = results
         st.session_state.trainer = type('obj', (object,), {
             'final_eval_scores': results.get('final_eval_scores', []),
-            'episode_values': results.get('portfolio_values', [])
+            'episode_values': results.get('portfolio_values', []),
+            'buy_and_hold_values': results.get('buy_and_hold_values', [])
         })
         st.session_state.final_metrics = (
             results.get('mean_score', 0),
@@ -663,10 +666,10 @@ else:  # Evaluate Pretrained Model mode
         if model_tickers:
             default_tickers = ",".join(model_tickers)
         else:
-            default_tickers = "INTC,HPE"
+            default_tickers = "NVDA,FTNT"
     except Exception as e:
         print(f"Error extracting tickers from model: {str(e)}")
-        default_tickers = "INTC,HPE"
+        default_tickers = "NVDA,FTNT"
 
     # Ticker selection with model tickers as default
     ticker_input = st.sidebar.text_input(
@@ -855,161 +858,182 @@ if st.session_state.training_started or st.session_state.evaluation_started:
     # Poll progress and update UI
     while ((is_training and not st.session_state.training_complete and not st.session_state.training_error) or
            (is_evaluation and not st.session_state.evaluation_complete and not st.session_state.evaluation_error)):
-        # Get progress data
-        overall_progress = progress_tracker.get_overall_progress()
-        forecaster_progress = progress_tracker.get_forecaster_progress()
-        rl_agent_progress = progress_tracker.get_rl_agent_progress()
+        try:
+            # Get progress data with safe defaults
+            overall_progress = progress_tracker.get_overall_progress() or {}
+            forecaster_progress = progress_tracker.get_forecaster_progress() or {}
+            rl_agent_progress = progress_tracker.get_rl_agent_progress() or {}
 
-        # Update overall status
-        overall_status = overall_progress.get("message", "Process in progress...")
-        overall_status_container.info(overall_status)
+            # Update overall status
+            overall_status = overall_progress.get("message", "Process in progress...")
+            overall_status_container.info(overall_status)
 
-        # Update overall progress bar
-        overall_progress_value = overall_progress.get("progress", 0.0)
-        # Ensure progress value is between 0 and 1
-        overall_progress_value = max(0.0, min(1.0, overall_progress_value))
-        overall_progress_container.progress(overall_progress_value)
+            # Update overall progress bar
+            overall_progress_value = overall_progress.get("progress", 0.0)
+            # Ensure progress value is between 0 and 1
+            overall_progress_value = max(0.0, min(1.0, overall_progress_value))
+            overall_progress_container.progress(overall_progress_value)
+        except Exception as e:
+            st.error(f"Error updating progress: {str(e)}")
+            time.sleep(2)  # Wait a bit before retrying
 
-        # Determine current phase and update phase status
-        current_phase = overall_progress.get("current_phase", 0)
-        if current_phase == 1:
-            # Forecaster phase
-            phase_status = forecaster_progress.get("message", "Training forecasting model...")
-            phase_progress_value = forecaster_progress.get("progress", 0.0)
+        try:
+            # Determine current phase and update phase status
+            current_phase = overall_progress.get("current_phase", 0)
+            if current_phase == 1:
+                # Forecaster phase
+                phase_status = forecaster_progress.get("message", "Training forecasting model...")
+                phase_progress_value = forecaster_progress.get("progress", 0.0)
 
-            # Display forecaster metrics
-            metrics_md = """
-            ### Forecasting Model Metrics
-            """
-
-            if forecaster_progress.get("current_trial") is not None:
-                metrics_md += f"""
-                - **Current Trial**: {forecaster_progress.get("current_trial", 0)}/{forecaster_progress.get("total_trials", 0)}
+                # Display forecaster metrics
+                metrics_md = """
+                ### Forecasting Model Metrics
                 """
 
-            if forecaster_progress.get("best_score") is not None:
+                if forecaster_progress.get("current_trial") is not None:
+                    metrics_md += f"""
+                    - **Current Trial**: {forecaster_progress.get("current_trial", 0)}/{forecaster_progress.get("total_trials", 0)}
+                    """
+
+                if forecaster_progress.get("best_score") is not None:
+                    metrics_md += f"""
+                    - **Best Score (SMAPE)**: {forecaster_progress.get("best_score", 0):.4f}
+                    """
+
+                elapsed_time = forecaster_progress.get("elapsed_time", 0)
                 metrics_md += f"""
-                - **Best Score (SMAPE)**: {forecaster_progress.get("best_score", 0):.4f}
+                - **Elapsed Time**: {format_time(elapsed_time)}
                 """
 
-            elapsed_time = forecaster_progress.get("elapsed_time", 0)
-            metrics_md += f"""
-            - **Elapsed Time**: {format_time(elapsed_time)}
-            """
+                metrics_container.markdown(metrics_md)
 
-            metrics_container.markdown(metrics_md)
+            elif current_phase == 2:
+                # RL agent phase
+                phase_status = rl_agent_progress.get("message", "Training RL agent...")
+                phase_progress_value = rl_agent_progress.get("progress", 0.0)
 
-        elif current_phase == 2:
-            # RL agent phase
-            phase_status = rl_agent_progress.get("message", "Training RL agent...")
-            phase_progress_value = rl_agent_progress.get("progress", 0.0)
-
-            # Display RL agent metrics
-            metrics_md = """
-            ### RL Agent Metrics
-            """
-
-            if rl_agent_progress.get("current_episode") is not None:
-                metrics_md += f"""
-                - **Current Episode**: {rl_agent_progress.get("current_episode", 0)}/{rl_agent_progress.get("total_episodes", 0)}
+                # Display RL agent metrics
+                metrics_md = """
+                ### RL Agent Metrics
                 """
 
-            if rl_agent_progress.get("current_score") is not None:
+                if rl_agent_progress.get("current_episode") is not None:
+                    metrics_md += f"""
+                    - **Current Episode**: {rl_agent_progress.get("current_episode", 0)}/{rl_agent_progress.get("total_episodes", 0)}
+                    """
+
+                if rl_agent_progress.get("current_score") is not None:
+                    metrics_md += f"""
+                    - **Current Score**: {rl_agent_progress.get("current_score", 0):.2f}
+                    """
+
+                if rl_agent_progress.get("sharpe_ratio") is not None:
+                    metrics_md += f"""
+                    - **Sharpe Ratio**: {rl_agent_progress.get("sharpe_ratio", 0):.2f}
+                    """
+
+                if rl_agent_progress.get("max_drawdown") is not None:
+                    metrics_md += f"""
+                    - **Max Drawdown**: {rl_agent_progress.get("max_drawdown", 0):.2%}
+                    """
+
+                elapsed_time = rl_agent_progress.get("elapsed_time", 0)
                 metrics_md += f"""
-                - **Current Score**: {rl_agent_progress.get("current_score", 0):.2f}
+                - **Elapsed Time**: {format_time(elapsed_time)}
                 """
 
-            if rl_agent_progress.get("sharpe_ratio") is not None:
-                metrics_md += f"""
-                - **Sharpe Ratio**: {rl_agent_progress.get("sharpe_ratio", 0):.2f}
+                metrics_container.markdown(metrics_md)
+            elif current_phase == 3:
+                # Evaluation phase
+                phase_status = overall_progress.get("message", "Evaluating model...")
+                phase_progress_value = overall_progress.get("progress", 0.0)
+
+                # Display evaluation metrics
+                metrics_md = """
+                ### Evaluation Metrics
                 """
 
-            if rl_agent_progress.get("max_drawdown") is not None:
+                elapsed_time = overall_progress.get("elapsed_time", 0)
                 metrics_md += f"""
-                - **Max Drawdown**: {rl_agent_progress.get("max_drawdown", 0):.2%}
+                - **Elapsed Time**: {format_time(elapsed_time)}
                 """
 
-            elapsed_time = rl_agent_progress.get("elapsed_time", 0)
-            metrics_md += f"""
-            - **Elapsed Time**: {format_time(elapsed_time)}
-            """
+                metrics_container.markdown(metrics_md)
+            else:
+                phase_status = "Initializing..."
+                phase_progress_value = 0.0
+                metrics_container.empty()
 
-            metrics_container.markdown(metrics_md)
-        elif current_phase == 3:
-            # Evaluation phase
-            phase_status = overall_progress.get("message", "Evaluating model...")
-            phase_progress_value = overall_progress.get("progress", 0.0)
-
-            # Display evaluation metrics
-            metrics_md = """
-            ### Evaluation Metrics
-            """
-
-            elapsed_time = overall_progress.get("elapsed_time", 0)
-            metrics_md += f"""
-            - **Elapsed Time**: {format_time(elapsed_time)}
-            """
-
-            metrics_container.markdown(metrics_md)
-        else:
-            phase_status = "Initializing..."
-            phase_progress_value = 0.0
-            metrics_container.empty()
-
-        # Update phase status and progress
-        phase_status_container.info(phase_status)
-        # Ensure progress value is between 0 and 1
-        phase_progress_value = max(0.0, min(1.0, phase_progress_value))
-        phase_progress_container.progress(phase_progress_value)
+            # Update phase status and progress
+            phase_status_container.info(phase_status)
+            # Ensure progress value is between 0 and 1
+            phase_progress_value = max(0.0, min(1.0, phase_progress_value))
+            phase_progress_container.progress(phase_progress_value)
+        except Exception as e:
+            # If there's an error updating the phase status, log it but don't crash
+            st.error(f"Error updating phase status: {str(e)}")
+            time.sleep(2)  # Wait a bit before retrying
 
         # Check if process is complete
-        if overall_progress.get("status") == "completed":
-            if is_training:
-                st.session_state.training_complete = True
-            else:
-                st.session_state.evaluation_complete = True
-            break
+        try:
+            if overall_progress.get("status") == "completed":
+                if is_training:
+                    st.session_state.training_complete = True
+                else:
+                    st.session_state.evaluation_complete = True
+                break
+        except Exception:
+            # If there's an error checking completion status, continue the loop
+            pass
 
         # Sleep to avoid excessive polling
         time.sleep(1)
 
     # Display completion message
     if (is_training and st.session_state.training_complete) or (is_evaluation and st.session_state.evaluation_complete):
-        # Clear progress displays
-        overall_status_container.empty()
-        overall_progress_container.empty()
-        phase_status_container.empty()
-        phase_progress_container.empty()
+        try:
+            # Clear progress displays
+            overall_status_container.empty()
+            overall_progress_container.empty()
+            phase_status_container.empty()
+            phase_progress_container.empty()
 
-        # Show final metrics
-        if is_training:
-            final_metrics_md = """
-            ## Training Completed Successfully!
+            # Show final metrics
+            if is_training:
+                final_metrics_md = """
+                ## Training Completed Successfully!
 
-            ### Final Metrics
-            """
-        else:
-            final_metrics_md = """
-            ## Evaluation Completed Successfully!
+                ### Final Metrics
+                """
+            else:
+                final_metrics_md = """
+                ## Evaluation Completed Successfully!
 
-            ### Final Metrics
-            """
+                ### Final Metrics
+                """
 
-        # Get final RL agent metrics
-        rl_agent_progress = progress_tracker.get_rl_agent_progress()
-        if rl_agent_progress.get("current_score") is not None:
+            # Get final RL agent metrics with safe defaults
+            rl_agent_progress = progress_tracker.get_rl_agent_progress() or {}
+            if rl_agent_progress.get("current_score") is not None:
+                final_metrics_md += f"""
+                - **Portfolio Score**: {rl_agent_progress.get("current_score", 0):.2f}
+                - **Sharpe Ratio**: {rl_agent_progress.get("sharpe_ratio", 0):.2f}
+                - **Max Drawdown**: {rl_agent_progress.get("max_drawdown", 0):.2%}
+                """
+
+            # Get total time with safe defaults
+            overall_progress = progress_tracker.get_overall_progress() or {}
+            total_time = overall_progress.get("elapsed_time", 0)
             final_metrics_md += f"""
-            - **Portfolio Score**: {rl_agent_progress.get("current_score", 0):.2f}
-            - **Sharpe Ratio**: {rl_agent_progress.get("sharpe_ratio", 0):.2f}
-            - **Max Drawdown**: {rl_agent_progress.get("max_drawdown", 0):.2%}
+            - **Total Time**: {format_time(total_time)}
             """
+        except Exception as e:
+            st.error(f"Error displaying completion metrics: {str(e)}")
+            final_metrics_md = """
+            ## Process Completed
 
-        # Get total time
-        overall_progress = progress_tracker.get_overall_progress()
-        total_time = overall_progress.get("elapsed_time", 0)
-        final_metrics_md += f"""
-        - **Total Time**: {format_time(total_time)}
-        """
+            There was an error displaying the final metrics.
+            """
 
         metrics_container.markdown(final_metrics_md)
 
