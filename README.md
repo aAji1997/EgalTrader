@@ -135,7 +135,7 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 ## 🤝 Contributing
 
 Contributions are made by:
-Anand Aji
-Siddharth Arora
-Dhruv Joshi
-Wai Wing Tang
+- Anand Aji
+- Siddharth Arora
+- Dhruv Joshi
+- Wai Wing Tang
