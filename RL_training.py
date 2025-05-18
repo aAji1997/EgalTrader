@@ -6,6 +6,7 @@ from torch.utils.data import DataLoader
 import json
 from datetime import datetime
 import os
+import time
 from tqdm import tqdm
 from progress_tracker import progress_tracker
 import pandas as pd
@@ -189,6 +190,11 @@ class RLTrainer:
         self.episode_values = []
         self.buy_and_hold_values = []
 
+        # Initialize detailed parameter tracking
+        self.detailed_parameter_history = []
+        self.parameter_tracking_frequency = 10  # Track parameters every 10 steps
+        self.last_parameter_tracking_time = time.time()
+        self.parameter_tracking_interval = 5  # Track at least every 5 seconds
 
 
 
@@ -319,6 +325,92 @@ class RLTrainer:
 
         return False  # Non-recoverable error
 
+    def _track_parameters(self, episode, step, force=False):
+        """
+        Track detailed parameter changes throughout training.
+
+        Args:
+            episode: Current episode number
+            step: Current step within the episode
+            force: If True, track parameters regardless of frequency settings
+        """
+        # Check if we should track parameters based on frequency or time interval
+        current_time = time.time()
+        should_track = (
+            force or
+            step % self.parameter_tracking_frequency == 0 or
+            (current_time - self.last_parameter_tracking_time) > self.parameter_tracking_interval
+        )
+
+        if not should_track:
+            return
+
+        # Update last tracking time
+        self.last_parameter_tracking_time = current_time
+
+        # Get current parameters from agent
+        if hasattr(self.agent, 'exploration_noise'):
+            exploration_noise = float(self.agent.exploration_noise)
+        else:
+            exploration_noise = 0.0
+
+        if hasattr(self.agent, 'exploration_temp'):
+            exploration_temp = float(self.agent.exploration_temp)
+        else:
+            exploration_temp = 1.0
+
+        if hasattr(self.agent, 'risk_preference'):
+            risk_preference = float(self.agent.risk_preference)
+        else:
+            risk_preference = 0.5
+
+        # Get learning rate
+        if hasattr(self.agent, 'actor_optimizer') and self.agent.actor_optimizer is not None:
+            learning_rate = float(self.agent.actor_optimizer.param_groups[0]['lr'])
+        else:
+            learning_rate = 0.0
+
+        # Get current style
+        if hasattr(self.agent, 'current_style'):
+            parameter_state = self.agent.current_style
+        else:
+            parameter_state = 'neutral'
+
+        # Get adaptive parameters if available
+        adaptive_params = {}
+        if hasattr(self.agent, 'adaptive_params'):
+            for key, value in self.agent.adaptive_params.items():
+                adaptive_params[key] = float(value)
+
+        # Create parameter record with detailed information
+        param_record = {
+            'episode': episode,
+            'step': step,
+            'global_step': (episode - 1) * self.steps_per_episode + step,
+            'timestamp': current_time,
+            'exploration_noise': exploration_noise,
+            'exploration_temp': exploration_temp,
+            'risk_preference': risk_preference,
+            'learning_rate': learning_rate,
+            'parameter_state': parameter_state,
+            'adaptive_params': adaptive_params
+        }
+
+        # Add market context information if available
+        if hasattr(self.agent, 'market_context'):
+            param_record['market_regime'] = self.agent.market_context.get('current_regime', 'unknown')
+
+        # Store the record
+        self.detailed_parameter_history.append(param_record)
+
+        # Limit history size to prevent memory issues
+        if len(self.detailed_parameter_history) > 10000:
+            # Keep the first 1000 and the last 9000 records
+            self.detailed_parameter_history = (
+                self.detailed_parameter_history[:1000] +
+                self.detailed_parameter_history[-9000:]
+            )
+
     def train(self):
         """Train the agent with streamlined meta-learning integration."""
         print("Starting training...")
@@ -355,6 +447,9 @@ class RLTrainer:
                 # Signal episode start to agent for parameter adaptation
                 self.agent.adapt_parameters(is_episode_start=True)
 
+                # Track parameters at episode start
+                self._track_parameters(episode, 0, force=True)
+
                 # Episode loop
                 for step in range(self.steps_per_episode):
                     # Check memory usage and adjust if needed
@@ -384,6 +479,9 @@ class RLTrainer:
                             else:
                                 raise e
 
+                    # Track parameters periodically during training
+                    self._track_parameters(episode, step)
+
                     # Update state and score
                     state = next_state
                     score += reward
@@ -397,6 +495,9 @@ class RLTrainer:
 
                 # End episode for agent's meta-learning
                 self.agent.end_episode()
+
+                # Track parameters at episode end
+                self._track_parameters(episode, self.steps_per_episode, force=True)
 
                 # Evaluate and save model periodically
                 if episode % self.eval_frequency == 0:
@@ -898,6 +999,10 @@ class RLTrainer:
             if 'parameter_history' in checkpoint:
                 self.agent.parameter_history = checkpoint['parameter_history']
 
+            # Load detailed parameter history if available
+            if 'detailed_parameter_history' in checkpoint:
+                self.detailed_parameter_history = checkpoint['detailed_parameter_history']
+
             print(f"\nLoaded checkpoint from {checkpoint_path}")
             print(f"Restored Market Context:")
             print(f"  Current Regime: {self.agent.market_context['current_regime']}")
@@ -939,7 +1044,7 @@ class RLTrainer:
                 print("Available keys in checkpoint:", list(checkpoint.keys()))
             raise
 
-    def _save_trading_statistics(self, trading_actions, allocation_history, timestamps=None):
+    def _save_trading_statistics(self, trading_actions, allocation_history):
         """Save visualizations of trading statistics and parameter adjustments"""
         try:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1043,7 +1148,7 @@ class RLTrainer:
                 plt.savefig(f"{self.figures_dir}/allocation_history_{timestamp}.png", bbox_inches='tight')
             plt.close()
 
-            # 3. Parameter Adjustment History
+            # 3. Parameter Adjustment History (Episode-level)
             if hasattr(self.agent, 'parameter_history') and self.agent.parameter_history:
                 param_data = pd.DataFrame(self.agent.parameter_history)
 
@@ -1052,25 +1157,25 @@ class RLTrainer:
 
                 # Plot exploration noise
                 ax1.plot(param_data['episode'], param_data['exploration_noise'], marker='o')
-                ax1.set_title('Exploration Noise History')
+                ax1.set_title('Exploration Noise History (Episode Level)')
                 ax1.set_ylabel('Exploration Noise')
                 ax1.grid(True)
 
                 # Plot exploration temperature
                 ax2.plot(param_data['episode'], param_data['exploration_temp'], marker='o', color='red')
-                ax2.set_title('Exploration Temperature History')
+                ax2.set_title('Exploration Temperature History (Episode Level)')
                 ax2.set_ylabel('Exploration Temp')
                 ax2.grid(True)
 
                 # Plot risk preference
                 ax3.plot(param_data['episode'], param_data['risk_preference'], marker='o', color='orange')
-                ax3.set_title('Risk Preference History')
+                ax3.set_title('Risk Preference History (Episode Level)')
                 ax3.set_ylabel('Risk Preference')
                 ax3.grid(True)
 
                 # Plot learning rate
                 ax4.plot(param_data['episode'], param_data['learning_rate'], marker='o', color='green')
-                ax4.set_title('Actor Learning Rate History')
+                ax4.set_title('Actor Learning Rate History (Episode Level)')
                 ax4.set_ylabel('Learning Rate')
                 ax4.grid(True)
 
@@ -1091,13 +1196,133 @@ class RLTrainer:
                             )
 
                 plt.tight_layout()
-                plt.savefig(f"{self.figures_dir}/parameter_history_{timestamp}.png")
+                plt.savefig(f"{self.figures_dir}/parameter_history_episode_{timestamp}.png")
                 plt.close()
 
                 # Save parameter history to CSV for analysis
-                param_data.to_csv(f"{self.figures_dir}/parameter_history_{timestamp}.csv", index=False)
+                param_data.to_csv(f"{self.figures_dir}/parameter_history_episode_{timestamp}.csv", index=False)
 
-            # 4. Save statistics to JSON
+            # 4. Detailed Parameter Tracking Throughout Training (Step-level)
+            if hasattr(self, 'detailed_parameter_history') and self.detailed_parameter_history:
+                # Convert to DataFrame for easier plotting
+                detailed_param_data = pd.DataFrame(self.detailed_parameter_history)
+
+                # Create a figure with multiple subplots for different parameters
+                fig, axes = plt.subplots(5, 1, figsize=(15, 25), sharex=True)
+
+                # Plot exploration noise over global steps
+                axes[0].plot(detailed_param_data['global_step'], detailed_param_data['exploration_noise'],
+                           linewidth=1.5, alpha=0.8, color='blue')
+                axes[0].set_title('Exploration Noise Throughout Training', fontsize=14)
+                axes[0].set_ylabel('Noise Value')
+                axes[0].grid(True, alpha=0.3)
+
+                # Plot exploration temperature over global steps
+                axes[1].plot(detailed_param_data['global_step'], detailed_param_data['exploration_temp'],
+                           linewidth=1.5, alpha=0.8, color='red')
+                axes[1].set_title('Exploration Temperature Throughout Training', fontsize=14)
+                axes[1].set_ylabel('Temperature')
+                axes[1].grid(True, alpha=0.3)
+
+                # Plot risk preference over global steps
+                axes[2].plot(detailed_param_data['global_step'], detailed_param_data['risk_preference'],
+                           linewidth=1.5, alpha=0.8, color='orange')
+                axes[2].set_title('Risk Preference Throughout Training', fontsize=14)
+                axes[2].set_ylabel('Risk Value')
+                axes[2].grid(True, alpha=0.3)
+
+                # Plot learning rate over global steps
+                axes[3].plot(detailed_param_data['global_step'], detailed_param_data['learning_rate'],
+                           linewidth=1.5, alpha=0.8, color='green')
+                axes[3].set_title('Learning Rate Throughout Training', fontsize=14)
+                axes[3].set_ylabel('Learning Rate')
+                axes[3].grid(True, alpha=0.3)
+
+                # Plot parameter state as a categorical variable
+                if 'parameter_state' in detailed_param_data.columns:
+                    # Create a numeric mapping for parameter states
+                    state_mapping = {'conservative': 0, 'neutral': 1, 'aggressive': 2}
+                    detailed_param_data['state_numeric'] = detailed_param_data['parameter_state'].map(
+                        lambda x: state_mapping.get(x, 1)  # Default to neutral (1) if unknown
+                    )
+
+                    # Plot the numeric state
+                    axes[4].plot(detailed_param_data['global_step'], detailed_param_data['state_numeric'],
+                               linewidth=1.5, alpha=0.8, color='purple')
+                    axes[4].set_title('Trading Style Throughout Training', fontsize=14)
+                    axes[4].set_ylabel('Style')
+                    axes[4].set_yticks([0, 1, 2])
+                    axes[4].set_yticklabels(['Conservative', 'Neutral', 'Aggressive'])
+                    axes[4].grid(True, alpha=0.3)
+
+                # Add episode boundaries as vertical lines
+                if 'episode' in detailed_param_data.columns:
+                    episode_changes = detailed_param_data['episode'].diff() > 0
+                    episode_boundaries = detailed_param_data.loc[episode_changes, 'global_step'].values
+
+                    for ax in axes:
+                        for boundary in episode_boundaries:
+                            ax.axvline(x=boundary, color='gray', linestyle='--', alpha=0.5)
+
+                # Set common x-axis label
+                axes[-1].set_xlabel('Global Training Step', fontsize=14)
+
+                # Add a title for the entire figure
+                fig.suptitle('Trading Parameter Changes Throughout Training', fontsize=16, y=0.92)
+
+                # Adjust layout and save
+                plt.tight_layout(rect=[0, 0, 1, 0.97])  # Make room for the suptitle
+                plt.savefig(f"{self.figures_dir}/parameter_history_detailed_{timestamp}.png", dpi=300)
+                plt.close()
+
+                # Save detailed parameter history to CSV for further analysis
+                detailed_param_data.to_csv(f"{self.figures_dir}/parameter_history_detailed_{timestamp}.csv", index=False)
+
+                # Create additional plots for adaptive parameters if available
+                if 'adaptive_params' in detailed_param_data.columns and len(detailed_param_data) > 0:
+                    # Extract adaptive parameters
+                    adaptive_params_list = detailed_param_data['adaptive_params'].tolist()
+                    if adaptive_params_list and isinstance(adaptive_params_list[0], dict):
+                        # Create a DataFrame with the adaptive parameters
+                        adaptive_df = pd.DataFrame([
+                            {
+                                'global_step': row['global_step'],
+                                'episode': row['episode'],
+                                **row['adaptive_params']
+                            }
+                            for row in detailed_param_data.to_dict('records')
+                        ])
+
+                        # Plot adaptive parameters
+                        plt.figure(figsize=(15, 10))
+
+                        # Get the adaptive parameter keys (excluding global_step and episode)
+                        param_keys = [col for col in adaptive_df.columns
+                                     if col not in ['global_step', 'episode']]
+
+                        # Plot each adaptive parameter
+                        for i, param in enumerate(param_keys):
+                            plt.plot(
+                                adaptive_df['global_step'],
+                                adaptive_df[param],
+                                label=param,
+                                linewidth=2,
+                                alpha=0.8
+                            )
+
+                        plt.title('Adaptive Parameters Throughout Training', fontsize=16)
+                        plt.xlabel('Global Training Step', fontsize=14)
+                        plt.ylabel('Parameter Value', fontsize=14)
+                        plt.legend(fontsize=12)
+                        plt.grid(True, alpha=0.3)
+                        plt.tight_layout()
+                        plt.savefig(f"{self.figures_dir}/adaptive_parameters_{timestamp}.png", dpi=300)
+                        plt.close()
+
+                        # Save adaptive parameters to CSV
+                        adaptive_df.to_csv(f"{self.figures_dir}/adaptive_parameters_{timestamp}.csv", index=False)
+
+            # 5. Save statistics to JSON
             stats = {
                 'trading_summary': {
                     ticker: {
@@ -1437,7 +1662,8 @@ class RLTrainer:
                 'buffer_config': buffer_config,
                 'training_state': training_state,
                 'allocation_history': list(safe_get_attr(self.agent, 'allocation_history', [])),
-                'history_cache': safe_get_attr(self.agent, 'history_cache', {})
+                'history_cache': safe_get_attr(self.agent, 'history_cache', {}),
+                'detailed_parameter_history': self.detailed_parameter_history if hasattr(self, 'detailed_parameter_history') else []
             }
 
             # Save checkpoint with error handling
@@ -2287,6 +2513,16 @@ class RLTrainer:
         # Track portfolio values at each step for each episode
         portfolio_values_by_episode = []
 
+        # Track trading actions for each ticker across all episodes
+        trading_actions = {
+            'buys': {ticker: [] for ticker in self.env.tickers},
+            'sells': {ticker: [] for ticker in self.env.tickers},
+            'holds': {ticker: [] for ticker in self.env.tickers}
+        }
+
+        # Track allocation history for each ticker
+        allocation_history = {ticker: [] for ticker in self.env.tickers}
+
         # Calculate buy and hold returns for comparison
         buy_and_hold_returns = {}
 
@@ -2429,6 +2665,13 @@ class RLTrainer:
                     'hold': 0
                 }
 
+                # Track ticker-specific actions for this episode
+                ticker_actions = {
+                    'buys': {ticker: 0 for ticker in self.env.tickers},
+                    'sells': {ticker: 0 for ticker in self.env.tickers},
+                    'holds': {ticker: 0 for ticker in self.env.tickers}
+                }
+
                 # Track action history for each ticker
                 action_history = []
 
@@ -2443,13 +2686,17 @@ class RLTrainer:
                         # Add to action history
                         action_history.append(discrete_actions.tolist())
 
-                        for act in discrete_actions:
+                        for i, act in enumerate(discrete_actions):
+                            ticker = self.env.tickers[i]
                             if act == 0:
                                 episode_actions['sell'] += 1
+                                ticker_actions['sells'][ticker] += 1
                             elif act == 1:
                                 episode_actions['hold'] += 1
+                                ticker_actions['holds'][ticker] += 1
                             elif act == 2:
                                 episode_actions['buy'] += 1
+                                ticker_actions['buys'][ticker] += 1
 
                     next_state, reward, done, info = self.env.step(action)
                     self.agent.update_market_context(next_state, reward, done)
@@ -2458,6 +2705,25 @@ class RLTrainer:
                     portfolio_value = info['portfolio_value'].item() if torch.is_tensor(info['portfolio_value']) else info['portfolio_value']
                     episode_value_history.append(portfolio_value)
                     episode_return_history.append(reward)
+
+                    # Track allocation for each ticker at this step
+                    positions = self.env.positions.cpu().numpy() if torch.is_tensor(self.env.positions) else self.env.positions
+                    for i, ticker in enumerate(self.env.tickers):
+                        # Calculate allocation as percentage of portfolio
+                        if portfolio_value > 0:
+                            # Get current prices using the get_current_prices method
+                            current_prices = self.env.get_current_prices()
+                            ticker_price = current_prices[i].item() if torch.is_tensor(current_prices) else current_prices[i]
+                            position_value = positions[i] * ticker_price
+                            allocation_pct = (position_value / portfolio_value) * 100
+                        else:
+                            allocation_pct = 0
+
+                        # Add to allocation history for this ticker
+                        if step == 0:  # Initialize the list for this episode
+                            allocation_history[ticker].append([allocation_pct])
+                        else:  # Append to the existing list for this episode
+                            allocation_history[ticker][-1].append(allocation_pct)
 
                     # Debug: Print step information every 10 steps
                     if step % 10 == 0:
@@ -2470,6 +2736,12 @@ class RLTrainer:
 
                 # Print action summary
                 print(f"  Actions taken: Buy: {episode_actions['buy']}, Sell: {episode_actions['sell']}, Hold: {episode_actions['hold']}")
+
+                # Add ticker-specific actions to the overall trading actions
+                for ticker in self.env.tickers:
+                    trading_actions['buys'][ticker].append(ticker_actions['buys'][ticker])
+                    trading_actions['sells'][ticker].append(ticker_actions['sells'][ticker])
+                    trading_actions['holds'][ticker].append(ticker_actions['holds'][ticker])
 
                 # Calculate ticker-wise returns at the end of the episode
                 final_date_idx = min(self.env.current_step, len(self.env.dates)-1)
@@ -2645,6 +2917,12 @@ class RLTrainer:
                 buy_and_hold_values=buy_and_hold_values
             )
 
+            # Save trading statistics and visualizations
+            self._save_trading_statistics(
+                trading_actions=trading_actions,
+                allocation_history=allocation_history
+            )
+
             # Store values for later access by evaluate method
             self.episode_values = episode_values
             self.buy_and_hold_values = buy_and_hold_values
@@ -2685,7 +2963,9 @@ class RLTrainer:
                 'outperformance': outperformance,  # Add outperformance
                 'outperformance_factor': outperformance_factor,  # Add outperformance factor
                 'normalized_sharpe': normalized_sharpe,  # Add normalized Sharpe
-                'composite_score': composite_score  # Add composite score
+                'composite_score': composite_score,  # Add composite score
+                'trading_actions': trading_actions,  # Add trading actions for visualization
+                'allocation_history': allocation_history  # Add allocation history for visualization
             }
 
             # Return the composite score as the rollout score for consistency
@@ -2704,7 +2984,9 @@ class RLTrainer:
                 'outperformance': outperformance,
                 'outperformance_factor': outperformance_factor,
                 'normalized_sharpe': normalized_sharpe,
-                'composite_score': composite_score
+                'composite_score': composite_score,
+                'trading_actions': trading_actions,
+                'allocation_history': allocation_history
             }
             # Use a neutral composite score
             composite_score = 1.0
@@ -2760,6 +3042,13 @@ class RLTrainer:
             # Store portfolio values and buy-and-hold values if available
             if hasattr(self, 'episode_values') and len(self.episode_values) > 0:
                 self.buy_and_hold_values = eval_metrics.get('buy_and_hold_values', [])
+
+            # Save trading statistics for this evaluation if available in metrics
+            if 'trading_actions' in eval_metrics and 'allocation_history' in eval_metrics:
+                self._save_trading_statistics(
+                    trading_actions=eval_metrics['trading_actions'],
+                    allocation_history=eval_metrics['allocation_history']
+                )
 
             return mean_score, sharpe_ratio, max_drawdown
 
@@ -2966,8 +3255,8 @@ if __name__ == "__main__":
     trainer = RLTrainer(
         eval_frequency=10,
         save_dir="memory",
-        training_batch_size=32,  # Reduced from 64 to compensate for longer sequence length
-        eval_batch_size=16,      # Reduced from 32 to compensate for longer sequence length
+        training_batch_size=32,
+        eval_batch_size=16,
         n_episodes=200,
         rollout_episodes=10,
         initial_capital=10000
